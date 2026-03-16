@@ -1,0 +1,10 @@
+{
+  "paste_hotkey": {
+    "modifier": "ctrl",
+    "key": "V"
+  },
+  "screenshot_hotkey": {
+    "modifier": "alt",
+    "key": "S"
+  }
+}

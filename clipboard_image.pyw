@@ -8,6 +8,7 @@ import os
 import sys
 import ctypes
 import ctypes.wintypes
+import json
 
 # Enable DPI awareness to prevent screenshot scaling issues
 try:
@@ -60,6 +61,57 @@ if sys.stderr and hasattr(sys.stderr, "write"):
 
 def get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_resource_path(filename):
+    """Get path to a resource file, works both in development and when bundled."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable
+        base_path = sys._MEIPASS
+    else:
+        # Running in development
+        base_path = get_script_dir()
+    return os.path.join(base_path, filename)
+
+
+def get_config_path():
+    """Get path to config file."""
+    return os.path.join(get_script_dir(), "config.json")
+
+
+# Default hotkey configuration
+DEFAULT_CONFIG = {
+    "paste_hotkey": {"modifier": "ctrl", "key": "V"},
+    "screenshot_hotkey": {"modifier": "alt", "key": "A"}
+}
+
+
+def load_config():
+    """Load configuration from file."""
+    config_path = get_config_path()
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                for key in DEFAULT_CONFIG:
+                    if key not in config:
+                        config[key] = DEFAULT_CONFIG[key]
+                return config
+    except Exception as e:
+        log.error(f"Error loading config: {e}")
+    return DEFAULT_CONFIG.copy()
+
+
+def save_config(config):
+    """Save configuration to file."""
+    config_path = get_config_path()
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+        log.info(f"Config saved to {config_path}")
+    except Exception as e:
+        log.error(f"Error saving config: {e}")
 
 
 def get_explorer_path():
@@ -426,6 +478,22 @@ HOOKPROC = ctypes.CFUNCTYPE(
 _hook_handle = None
 _ctrl_pressed = False
 _alt_pressed = False
+_config = None
+
+
+# VK code mapping for common keys
+VK_CODES = {
+    "A": 0x41, "B": 0x42, "C": 0x43, "D": 0x44, "E": 0x45,
+    "F": 0x46, "G": 0x47, "H": 0x48, "I": 0x49, "J": 0x4A,
+    "K": 0x4B, "L": 0x4C, "M": 0x4D, "N": 0x4E, "O": 0x4F,
+    "P": 0x50, "Q": 0x51, "R": 0x52, "S": 0x53, "T": 0x54,
+    "U": 0x55, "V": 0x56, "W": 0x57, "X": 0x58, "Y": 0x59, "Z": 0x5A,
+    "0": 0x30, "1": 0x31, "2": 0x32, "3": 0x33, "4": 0x34,
+    "5": 0x35, "6": 0x36, "7": 0x37, "8": 0x38, "9": 0x39,
+    "F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73, "F5": 0x74,
+    "F6": 0x75, "F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79,
+    "F11": 0x7A, "F12": 0x7B,
+}
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -460,15 +528,30 @@ def _low_level_keyboard_proc(nCode, wParam, lParam):
                 if old_state != _alt_pressed:
                     log.debug(f"Alt state changed: {_alt_pressed}")
 
-            # Detect Ctrl+V (save clipboard image to file)
-            if vk == VK_V and wParam == WM_KEYDOWN and _ctrl_pressed:
-                log.info("Ctrl+V detected via hook!")
+            # Get configured hotkeys
+            paste_key = VK_CODES.get(_config["paste_hotkey"]["key"].upper(), VK_V)
+            paste_modifier = _config["paste_hotkey"]["modifier"].lower()
+            screenshot_key = VK_CODES.get(_config["screenshot_hotkey"]["key"].upper(), VK_A)
+            screenshot_modifier = _config["screenshot_hotkey"]["modifier"].lower()
+
+            # Detect paste hotkey
+            paste_modifier_pressed = (
+                (_ctrl_pressed and paste_modifier == "ctrl") or
+                (_alt_pressed and paste_modifier == "alt")
+            )
+            if vk == paste_key and wParam == WM_KEYDOWN and paste_modifier_pressed:
+                hotkey_str = f"{paste_modifier.capitalize()}+{_config['paste_hotkey']['key'].upper()}"
+                log.info(f"{hotkey_str} detected via hook!")
                 threading.Thread(target=on_paste, daemon=True).start()
 
-            # Detect Alt+A (Screenshot mode)
-            # Note: When Alt is held, other keys generate WM_SYSKEYDOWN instead of WM_KEYDOWN
-            if vk == VK_A and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN) and _alt_pressed:
-                log.info("Alt+A detected via hook!")
+            # Detect screenshot hotkey
+            screenshot_modifier_pressed = (
+                (_ctrl_pressed and screenshot_modifier == "ctrl") or
+                (_alt_pressed and screenshot_modifier == "alt")
+            )
+            if vk == screenshot_key and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN) and screenshot_modifier_pressed:
+                hotkey_str = f"{screenshot_modifier.capitalize()}+{_config['screenshot_hotkey']['key'].upper()}"
+                log.info(f"{hotkey_str} detected via hook!")
                 threading.Thread(target=on_screenshot, daemon=True).start()
     except Exception as e:
         log.error(f"Exception in hook callback: {e}", exc_info=True)
@@ -520,11 +603,74 @@ def stop_keyboard_hook():
         log.info("Keyboard hook removed")
 
 
+def show_settings_dialog():
+    """Show settings dialog for configuring hotkeys."""
+    global _config
+    
+    root = tk.Tk()
+    root.title("Settings - Clipboard Image Paster")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+    
+    # Center the window
+    root.update_idletasks()
+    width = 350
+    height = 200
+    x = (root.winfo_screenwidth() // 2) - (width // 2)
+    y = (root.winfo_screenheight() // 2) - (height // 2)
+    root.geometry(f"{width}x{height}+{x}+{y}")
+    
+    frame = tk.Frame(root, padx=20, pady=20)
+    frame.pack(fill="both", expand=True)
+    
+    # Paste hotkey
+    tk.Label(frame, text="Paste Hotkey:").grid(row=0, column=0, sticky="w", pady=5)
+    paste_modifier = tk.StringVar(value=_config["paste_hotkey"]["modifier"].capitalize())
+    paste_key = tk.StringVar(value=_config["paste_hotkey"]["key"].upper())
+    
+    paste_mod_combo = tk.OptionMenu(frame, paste_modifier, "Ctrl", "Alt")
+    paste_mod_combo.grid(row=0, column=1, padx=5)
+    paste_key_entry = tk.Entry(frame, textvariable=paste_key, width=5)
+    paste_key_entry.grid(row=0, column=2, padx=5)
+    
+    # Screenshot hotkey
+    tk.Label(frame, text="Screenshot Hotkey:").grid(row=1, column=0, sticky="w", pady=5)
+    screenshot_modifier = tk.StringVar(value=_config["screenshot_hotkey"]["modifier"].capitalize())
+    screenshot_key = tk.StringVar(value=_config["screenshot_hotkey"]["key"].upper())
+    
+    screenshot_mod_combo = tk.OptionMenu(frame, screenshot_modifier, "Ctrl", "Alt")
+    screenshot_mod_combo.grid(row=1, column=1, padx=5)
+    screenshot_key_entry = tk.Entry(frame, textvariable=screenshot_key, width=5)
+    screenshot_key_entry.grid(row=1, column=2, padx=5)
+    
+    def on_save():
+        global _config
+        _config["paste_hotkey"]["modifier"] = paste_modifier.get().lower()
+        _config["paste_hotkey"]["key"] = paste_key.get().upper()
+        _config["screenshot_hotkey"]["modifier"] = screenshot_modifier.get().lower()
+        _config["screenshot_hotkey"]["key"] = screenshot_key.get().upper()
+        save_config(_config)
+        root.destroy()
+        if _tray_icon:
+            _tray_icon.notify("Settings saved.", "Settings")
+    
+    def on_cancel():
+        root.destroy()
+    
+    btn_frame = tk.Frame(frame)
+    btn_frame.grid(row=2, column=0, columnspan=3, pady=20)
+    
+    tk.Button(btn_frame, text="Save", width=10, command=on_save).pack(side="left", padx=10)
+    tk.Button(btn_frame, text="Cancel", width=10, command=on_cancel).pack(side="left", padx=10)
+    
+    root.mainloop()
+
+
 def create_tray_icon():
     """Create and run the system tray icon."""
     global _tray_icon
 
-    icon_path = os.path.join(get_script_dir(), "icon.ico")
+    icon_path = get_resource_path("icon.ico")
     if os.path.exists(icon_path):
         icon_image = Image.open(icon_path)
     else:
@@ -535,8 +681,19 @@ def create_tray_icon():
         stop_keyboard_hook()
         icon.stop()
 
+    def on_settings(icon, item):
+        show_settings_dialog()
+
+    def get_hotkey_display():
+        paste = f"{_config['paste_hotkey']['modifier'].capitalize()}+{_config['paste_hotkey']['key'].upper()}"
+        screenshot = f"{_config['screenshot_hotkey']['modifier'].capitalize()}+{_config['screenshot_hotkey']['key'].upper()}"
+        return f"Paste: {paste}  |  Screenshot: {screenshot}"
+
     menu = pystray.Menu(
         pystray.MenuItem("Clipboard Image Paster", None, enabled=False),
+        pystray.MenuItem(lambda text: get_hotkey_display(), None, enabled=False),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Settings", on_settings),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Exit", on_exit),
     )
@@ -616,6 +773,10 @@ if __name__ == "__main__":
     log.info("=" * 40)
     log.info("Clipboard Image Paster starting")
     log.info(f"Log file: {LOG_PATH}")
+    
+    # Load configuration
+    _config = load_config()
+    log.info(f"Loaded config: paste={_config['paste_hotkey']['modifier']}+{_config['paste_hotkey']['key']}, screenshot={_config['screenshot_hotkey']['modifier']}+{_config['screenshot_hotkey']['key']}")
 
     # Kill previous instance
     kill_previous_instance()
