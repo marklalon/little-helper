@@ -32,7 +32,16 @@ import win32con
 from PIL import Image, ImageGrab, ImageTk
 
 # --- Logging setup ---
-LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clipboard_image.log")
+def get_data_dir():
+    """Get directory for storing config and log files."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable - use the exe's directory
+        return os.path.dirname(sys.executable)
+    else:
+        # Running in development
+        return os.path.dirname(os.path.abspath(__file__))
+
+LOG_PATH = os.path.join(get_data_dir(), "clipboard_image.log")
 
 # Clear log file on startup
 if os.path.exists(LOG_PATH):
@@ -76,7 +85,7 @@ def get_resource_path(filename):
 
 def get_config_path():
     """Get path to config file."""
-    return os.path.join(get_script_dir(), "config.json")
+    return os.path.join(get_data_dir(), "config.json")
 
 
 # Default hotkey configuration
