@@ -1,2 +1,2 @@
 @echo off
-start "" pythonw "%~dp0clipboard_image.pyw"
+start "" pythonw "%~dp0src\main.pyw"

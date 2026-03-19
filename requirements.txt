@@ -2,3 +2,7 @@ pystray
 Pillow
 pywin32
 pyinstaller
+psutil
+nvidia-ml-py
+wmi
+pythonnet

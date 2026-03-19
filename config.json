@@ -6,5 +6,18 @@
   "screenshot_hotkey": {
     "modifier": "alt",
     "key": "Z"
+  },
+  "gpu_power_limit": {
+    "enabled": true,
+    "watts": 550
+  },
+  "overlay": {
+    "enabled": true,
+    "x": 3230,
+    "y": 1214,
+    "width": 182,
+    "height": 145,
+    "opacity": 0.85,
+    "refresh_ms": 1000
   }
 }

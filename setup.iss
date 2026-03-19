@@ -16,7 +16,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer
 OutputBaseFilename=LittleHelper-Setup
-SetupIconFile=icon.ico
+SetupIconFile=res\icon.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -33,7 +33,7 @@ Name: "autostart"; Description: "Launch at startup"; GroupDescription: "Options:
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "res\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]

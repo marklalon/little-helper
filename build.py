@@ -28,8 +28,8 @@ def clean():
 
 def build():
     """Build executable with PyInstaller."""
-    icon_path = os.path.join(SCRIPT_DIR, "icon.ico")
-    
+    icon_path = os.path.join(SCRIPT_DIR, "res", "icon.ico")
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name=LittleHelper",
@@ -39,7 +39,16 @@ def build():
         f"--add-data={icon_path};.",  # Include icon.ico in the bundle
         "--hidden-import=PIL._tkinter_finder",
         "--hidden-import=win32timezone",
-        os.path.join(SCRIPT_DIR, "clipboard_image.pyw"),
+        "--hidden-import=psutil",
+        "--hidden-import=pynvml",
+        "--collect-all=wmi",        # wmi needs full collect for its extensions
+        "--hidden-import=config",
+        "--hidden-import=clipboard_paste",
+        "--hidden-import=screenshot",
+        "--hidden-import=hotkey",
+        "--hidden-import=gpu_power",
+        "--hidden-import=system_overlay",
+        os.path.join(SCRIPT_DIR, "src", "main.pyw"),
     ]
     
     print("Running PyInstaller...")
