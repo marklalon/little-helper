@@ -38,13 +38,13 @@ def _run_nvidia_smi(args: list[str]) -> tuple[int, str, str]:
     return -1, "", "nvidia-smi not found"
 
 
-def get_gpu_power_limits() -> tuple[float, float, float] | None:
+def get_gpu_power_limits() -> tuple[float, float, float, float] | None:
     """
-    Query GPU min/max/current power limits.
-    Returns (min_w, max_w, current_w) or None if unavailable.
+    Query GPU power limits.
+    Returns (min_w, max_w, current_w, default_w) or None if unavailable.
     """
     rc, out, err = _run_nvidia_smi([
-        "--query-gpu=power.min_limit,power.max_limit,power.limit",
+        "--query-gpu=power.min_limit,power.max_limit,power.limit,power.default_limit",
         "--format=csv,noheader,nounits",
     ])
     if rc != 0 or not out:
@@ -52,7 +52,7 @@ def get_gpu_power_limits() -> tuple[float, float, float] | None:
         return None
     try:
         parts = [p.strip() for p in out.split(",")]
-        return float(parts[0]), float(parts[1]), float(parts[2])
+        return float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
     except Exception as e:
         log.warning(f"Failed to parse power limits '{out}': {e}")
         return None
@@ -95,9 +95,9 @@ def apply_gpu_power_limit(config: dict, notify_fn=None) -> None:
         log.warning("No Nvidia GPU found or nvidia-smi unavailable, skipping power limit")
         return
 
-    min_w, max_w, current_w = limits
-    _original_watts = current_w
-    log.info(f"GPU power limits: min={min_w}W max={max_w}W current={current_w}W target={target_w}W")
+    min_w, max_w, current_w, default_w = limits
+    _original_watts = default_w  # always restore to factory default, not current
+    log.info(f"GPU power limits: min={min_w}W max={max_w}W current={current_w}W default={default_w}W target={target_w}W")
 
     # Clamp to valid range
     target_w = max(int(min_w), min(int(max_w), target_w))

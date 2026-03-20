@@ -219,7 +219,7 @@ def _control_loop(config: dict, lhm_computer, lhm_lock: threading.Lock) -> None:
             if val is not None:
                 # Manual mode: val IS the target percentage
                 target_pct = val if source == "manual" else _interpolate_curve(val, curve)
-                if target_pct != last_target:
+                if last_target is None or abs(target_pct - last_target) >= 1.0:
                     log.debug(f"Fan control: {source}={val:.1f} -> {target_pct:.1f}%")
                     last_target = target_pct
                 with lhm_lock:
@@ -372,7 +372,7 @@ def _gpu_control_loop(config: dict) -> None:
                 val_ok     = True
 
             if val_ok:
-                if target_pct != last_target:
+                if last_target is None or abs(target_pct - last_target) >= 1.0:
                     log.debug(f"GPU fan: {val_str} -> {target_pct:.1f}%")
                     last_target = target_pct
                 for i in range(n_fans):

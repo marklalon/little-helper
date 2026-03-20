@@ -71,7 +71,7 @@ def init_lhm() -> bool:
         _lhm_computer.IsGpuEnabled = False
         _lhm_computer.IsMemoryEnabled = True
         _lhm_computer.IsMotherboardEnabled = True
-        _lhm_computer.IsControllerEnabled = False
+        _lhm_computer.IsControllerEnabled = True   # needed for SMBus (DIMM temps)
         _lhm_computer.IsNetworkEnabled = False
         _lhm_computer.IsStorageEnabled = False
         _lhm_computer.Open()
@@ -93,16 +93,22 @@ def init_lhm() -> bool:
                             _lhm_cpu_power = sensor
                             log.debug(f"Found CPU power sensor: {sensor.Name}")
 
-            elif hw_type == "Memory":
-                for sub in list(hardware.SubHardware) + [hardware]:
+            else:
+                # RAM temps may appear under SMBus, EmbeddedController, or other
+                # hardware types — scan all non-CPU hardware for DIMM/DDR temp sensors
+                _RAM_KEYWORDS = ("ddr", "dimm", "memory", "mem ", "mem#", "channel")
+                for node in list(hardware.SubHardware) + [hardware]:
                     try:
-                        sub.Update()
+                        node.Update()
                     except Exception:
                         pass
-                    for sensor in sub.Sensors:
-                        if sensor.SensorType.ToString() == "Temperature":
+                    for sensor in node.Sensors:
+                        if sensor.SensorType.ToString() != "Temperature":
+                            continue
+                        name_lower = sensor.Name.lower()
+                        if any(kw in name_lower for kw in _RAM_KEYWORDS):
                             _lhm_ram_temps.append(sensor)
-                            log.debug(f"Found RAM temp sensor: {sensor.Name}")
+                            log.debug(f"Found RAM temp sensor: {sensor.Name} on {hw_type}")
 
         _lhm_available = True
         log.info(

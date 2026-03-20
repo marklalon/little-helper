@@ -175,6 +175,8 @@ def show_settings_dialog() -> None:
             pass
         return
 
+    _initing = [True]   # guard: suppress side-effect callbacks during widget setup
+
     root = tk.Tk()
     _settings_root = root
     root.title("Settings - Little Helper")
@@ -230,6 +232,7 @@ def show_settings_dialog() -> None:
     _make_key_entry(row1, ss_key).pack(side="left")
 
     def _apply_hotkey_modifiers(*_):
+        if _initing[0]: return
         _config["paste_hotkey"]["modifier"]      = paste_mod.get().lower()
         _config["screenshot_hotkey"]["modifier"] = ss_mod.get().lower()
         cfg.save_config(_config)
@@ -267,6 +270,7 @@ def show_settings_dialog() -> None:
     _toggle_spin()
 
     def _apply_gpu_power(*_):
+        if _initing[0]: return
         _config["gpu_power_limit"]["enabled"] = gpu_enabled.get()
         _config["gpu_power_limit"]["watts"]   = gpu_watts.get()
         cfg.save_config(_config)
@@ -300,6 +304,7 @@ def show_settings_dialog() -> None:
                textvariable=ov_refresh, width=6).pack(side="left", padx=4)
 
     def _apply_overlay(*_):
+        if _initing[0]: return
         _config["overlay"]["enabled"]    = ov_enabled.get()
         _config["overlay"]["opacity"]    = round(ov_opacity.get(), 2)
         _config["overlay"]["refresh_ms"] = ov_refresh.get()
@@ -369,6 +374,7 @@ def show_settings_dialog() -> None:
             row_fc3.pack(fill="x", pady=3)
         else:
             row_fc3.pack_forget()
+        if _initing[0]: return
         _config["fan_control"]["source"] = source
         cfg.save_config(_config)
         if fan_control.fan_control_is_active():
@@ -381,6 +387,7 @@ def show_settings_dialog() -> None:
     _apply_source_immediately()  # set initial visibility
 
     def _apply_fc_enabled(*_):
+        if _initing[0]: return
         _config["fan_control"]["enabled"] = fc_enabled.get()
         cfg.save_config(_config)
         if fc_enabled.get():
@@ -394,6 +401,7 @@ def show_settings_dialog() -> None:
     fc_enabled.trace_add("write", _apply_fc_enabled)
 
     def _apply_fc_interval(*_):
+        if _initing[0]: return
         _config["fan_control"]["interval_s"] = fc_interval.get()
         cfg.save_config(_config)
         if fan_control.fan_control_is_active():
@@ -459,6 +467,7 @@ def show_settings_dialog() -> None:
             row_gfc3.pack(fill="x", pady=3)
         else:
             row_gfc3.pack_forget()
+        if _initing[0]: return
         _config["gpu_fan_control"]["source"] = source
         cfg.save_config(_config)
         if fan_control.gpu_fan_control_is_active():
@@ -469,6 +478,7 @@ def show_settings_dialog() -> None:
     _apply_gfc_source_immediately()  # set initial visibility
 
     def _apply_gfc_enabled(*_):
+        if _initing[0]: return
         _config["gpu_fan_control"]["enabled"] = gfc_enabled.get()
         cfg.save_config(_config)
         if gfc_enabled.get():
@@ -480,6 +490,7 @@ def show_settings_dialog() -> None:
     gfc_enabled.trace_add("write", _apply_gfc_enabled)
 
     def _apply_gfc_interval(*_):
+        if _initing[0]: return
         _config["gpu_fan_control"]["interval_s"] = gfc_interval.get()
         cfg.save_config(_config)
         if fan_control.gpu_fan_control_is_active():
@@ -491,11 +502,19 @@ def show_settings_dialog() -> None:
     # ── Close: save key fields and slider defaults ────────────────────────
     def _close():
         global _settings_root
-        _config["paste_hotkey"]["key"]           = paste_key.get().upper()
-        _config["screenshot_hotkey"]["key"]      = ss_key.get().upper()
-        _config["fan_control"]["manual_pct"]     = int(fc_manual.get())
-        _config["gpu_fan_control"]["manual_pct"] = int(gfc_manual.get())
-        cfg.save_config(_config)
+        dirty = False
+        for path, new_val in [
+            (("paste_hotkey",      "key"),        paste_key.get().upper()),
+            (("screenshot_hotkey", "key"),        ss_key.get().upper()),
+            (("fan_control",       "manual_pct"), int(fc_manual.get())),
+            (("gpu_fan_control",   "manual_pct"), int(gfc_manual.get())),
+        ]:
+            section, key = path
+            if _config[section][key] != new_val:
+                _config[section][key] = new_val
+                dirty = True
+        if dirty:
+            cfg.save_config(_config)
         if _poll_id[0]:
             root.after_cancel(_poll_id[0])
         if _gfc_poll_id[0]:
@@ -504,6 +523,9 @@ def show_settings_dialog() -> None:
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _close)
+
+    # All widgets built — allow trace callbacks to fire from now on
+    _initing[0] = False
 
     root.mainloop()
 

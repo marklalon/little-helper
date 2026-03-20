@@ -91,6 +91,11 @@ VK_CODES = {
 _hook_handle = None
 _hook_proc   = None  # kept alive to prevent GC
 
+import time as _time
+_last_paste_t      = 0.0
+_last_screenshot_t = 0.0
+_HOTKEY_COOLDOWN   = 0.5  # seconds
+
 
 def _is_key_down(vk_code: int) -> bool:
     return bool(_user32.GetAsyncKeyState(vk_code) & 0x8000)
@@ -120,9 +125,13 @@ def start_keyboard_hook(config: dict, on_paste_fn, on_screenshot_fn) -> None:
                 paste_mod_ok = (ctrl_down and paste_mod == "ctrl") or \
                                (alt_down  and paste_mod == "alt")
                 if vk == paste_key and wParam == WM_KEYDOWN and paste_mod_ok:
-                    hotkey_str = f"{paste_mod.capitalize()}+{config['paste_hotkey']['key'].upper()}"
-                    log.info(f"{hotkey_str} detected via hook!")
-                    threading.Thread(target=on_paste_fn, daemon=True).start()
+                    global _last_paste_t
+                    now = _time.monotonic()
+                    if now - _last_paste_t >= _HOTKEY_COOLDOWN:
+                        _last_paste_t = now
+                        hotkey_str = f"{paste_mod.capitalize()}+{config['paste_hotkey']['key'].upper()}"
+                        log.debug(f"{hotkey_str} detected via hook")
+                        threading.Thread(target=on_paste_fn, daemon=True).start()
 
                 # Accept SYSKEYDOWN too so Alt+X fires when another window has focus
                 screenshot_mod_ok = (ctrl_down and screenshot_mod == "ctrl") or \
@@ -130,9 +139,13 @@ def start_keyboard_hook(config: dict, on_paste_fn, on_screenshot_fn) -> None:
                 if vk == screenshot_key and \
                    wParam in (WM_KEYDOWN, WM_SYSKEYDOWN) and \
                    screenshot_mod_ok:
-                    hotkey_str = f"{screenshot_mod.capitalize()}+{config['screenshot_hotkey']['key'].upper()}"
-                    log.info(f"{hotkey_str} detected via hook!")
-                    threading.Thread(target=on_screenshot_fn, daemon=True).start()
+                    global _last_screenshot_t
+                    now = _time.monotonic()
+                    if now - _last_screenshot_t >= _HOTKEY_COOLDOWN:
+                        _last_screenshot_t = now
+                        hotkey_str = f"{screenshot_mod.capitalize()}+{config['screenshot_hotkey']['key'].upper()}"
+                        log.debug(f"{hotkey_str} detected via hook")
+                        threading.Thread(target=on_screenshot_fn, daemon=True).start()
 
         except Exception as e:
             log.error(f"Exception in hook callback: {e}", exc_info=True)
