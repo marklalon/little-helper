@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
         "source": "mixed",   # "gpu_temp" | "cpu_temp" | "mixed" | "manual"
         "interval_s": 2,
         "manual_pct": 50,       # used when source == "manual"
-        "curve": [[40, 30], [60, 50], [70, 75], [80, 100]],
+        "curve": [[40, 30], [60, 50], [70, 70], [85, 100]],
         "fan_indices": [],      # [] = all fans; [0, 1] = filter by index
     },
     "gpu_fan_control": {
@@ -39,7 +39,7 @@ DEFAULT_CONFIG = {
         "source": "gpu_temp",   # "gpu_temp" | "manual"
         "interval_s": 2,
         "manual_pct": 50,
-        "curve": [[40, 30], [60, 50], [70, 75], [80, 100]],
+        "curve": [[40, 30], [60, 50], [70, 70], [85, 100]],
     },
 }
 
