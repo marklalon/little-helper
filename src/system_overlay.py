@@ -293,6 +293,7 @@ class SystemMonitorOverlay:
 
     def run(self) -> None:
         """Build UI and run mainloop (blocks until close())."""
+        global _overlay_instance
         self._running = True
         self.root = tk.Tk()
         self.root.overrideredirect(True)
@@ -308,8 +309,19 @@ class SystemMonitorOverlay:
         # Kick off stats loop
         self.root.after(100, self._update_stats)
 
-        self.root.mainloop()
-        self._running = False
+        try:
+            self.root.mainloop()
+        finally:
+            # mainloop exited (normal close OR unexpected destruction).
+            # Ensure global state and tray menu are always cleaned up.
+            self._running = False
+            if _overlay_instance is self:
+                _overlay_instance = None
+            if self._on_close_fn:
+                try:
+                    self._on_close_fn()
+                except Exception:
+                    pass
 
     def close(self) -> None:
         """Destroy the window (safe to call from any thread)."""
@@ -401,20 +413,40 @@ class SystemMonitorOverlay:
         if not self._running:
             return
 
-        # Drain queue
         try:
-            stats = self._q.get_nowait()
-            self._apply_stats(stats)
-        except queue.Empty:
-            pass
+            # Check if the underlying window still exists (OS may have destroyed it)
+            if not self.root.winfo_exists():
+                log.warning("Overlay window was destroyed externally, cleaning up")
+                self.close()
+                return
 
-        # Spawn fetch thread if idle
-        if not self._fetch_running:
-            self._fetch_running = True
-            threading.Thread(target=self._fetch_thread, daemon=True).start()
+            # Drain queue
+            try:
+                stats = self._q.get_nowait()
+                self._apply_stats(stats)
+            except queue.Empty:
+                pass
 
-        refresh = self.config["overlay"].get("refresh_ms", 1000)
-        self.root.after(refresh, self._update_stats)
+            # Spawn fetch thread if idle
+            if not self._fetch_running:
+                self._fetch_running = True
+                threading.Thread(target=self._fetch_thread, daemon=True).start()
+
+            # Re-assert topmost every 30 cycles (~30s at 1000ms refresh) to
+            # counteract Windows DWM occasionally dropping the flag.
+            self._topmost_counter = getattr(self, "_topmost_counter", 0) + 1
+            if self._topmost_counter >= 30:
+                self._topmost_counter = 0
+                self.root.attributes("-topmost", False)
+                self.root.attributes("-topmost", True)
+
+        except Exception:
+            log.exception("Error in overlay update loop")
+
+        # Always reschedule as long as we're running, even if an error occurred
+        if self._running:
+            refresh = self.config["overlay"].get("refresh_ms", 1000)
+            self.root.after(refresh, self._update_stats)
 
     def _fetch_thread(self) -> None:
         try:
