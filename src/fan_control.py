@@ -198,10 +198,7 @@ def _control_loop(config: dict, lhm_computer, lhm_lock: threading.Lock) -> None:
     fc_cfg      = config.get("fan_control", {})
     source      = fc_cfg.get("source", "gpu_temp")
     interval_s  = max(1, fc_cfg.get("interval_s", 3))
-    raw_curve   = fc_cfg.get("curve", [[40, 30], [60, 50], [75, 75], [85, 100]])
     fan_indices = fc_cfg.get("fan_indices", [])
-
-    curve = sorted([(float(x), float(y)) for x, y in raw_curve])
 
     with lhm_lock:
         fan_controls = _discover_fan_controls(lhm_computer, fan_indices)
@@ -216,13 +213,15 @@ def _control_loop(config: dict, lhm_computer, lhm_lock: threading.Lock) -> None:
 
     log.info(
         f"Fan control loop: source={source}, interval={interval_s}s, "
-        f"fans={len(fan_controls)}, curve={curve}"
+        f"fans={len(fan_controls)}, curve=dynamic"
     )
 
     last_target: float | None = None
 
     while not _stop_event.is_set():
         try:
+            raw_curve = config.get("fan_control", {}).get("curve", [[40, 30], [60, 50], [75, 75], [85, 100]])
+            curve = sorted([(float(x), float(y)) for x, y in raw_curve])
             val = _get_source_value(source)
             if val is not None:
                 # Manual mode: val IS the target percentage
@@ -329,9 +328,6 @@ def _gpu_control_loop(config: dict) -> None:
     fc_cfg     = config.get("gpu_fan_control", {})
     source     = fc_cfg.get("source", "gpu_temp")
     interval_s = max(1, fc_cfg.get("interval_s", 2))
-    raw_curve  = fc_cfg.get("curve", [[40, 30], [60, 50], [70, 75], [80, 100]])
-    curve      = sorted([(float(x), float(y)) for x, y in raw_curve])
-
     try:
         import pynvml
         import system_overlay
@@ -353,13 +349,15 @@ def _gpu_control_loop(config: dict) -> None:
 
     log.info(
         f"GPU fan control: {n_fans} fan(s), source={source}, "
-        f"interval={interval_s}s, curve={curve}"
+        f"interval={interval_s}s, curve=dynamic"
     )
 
     last_target: float | None = None
 
     while not _gpu_stop_event.is_set():
         try:
+            raw_curve = config.get("gpu_fan_control", {}).get("curve", [[40, 30], [60, 50], [70, 75], [80, 100]])
+            curve = sorted([(float(x), float(y)) for x, y in raw_curve])
             if source == "manual":
                 target_pct = _gpu_manual_pct
                 val_str    = f"manual={target_pct:.1f}"

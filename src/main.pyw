@@ -215,9 +215,9 @@ def show_settings_dialog() -> None:
         root = tk.Tk()
         _settings_root = root
         root.title("Settings - Little Helper")
-        root.resizable(False, False)
+        root.resizable(True, True)
 
-        width, height = 420, 780
+        width, height = 445, 860
         root.update_idletasks()
         x = (root.winfo_screenwidth()  // 2) - (width  // 2)
         y = (root.winfo_screenheight() // 2) - (height // 2)
@@ -232,8 +232,28 @@ def show_settings_dialog() -> None:
 
         root.after(50, _acquire_focus)
 
-        outer = tk.Frame(root, padx=16, pady=12)
-        outer.pack(fill="both", expand=True)
+        # Scrollable content area
+        _canvas = tk.Canvas(root, borderwidth=0, highlightthickness=0)
+        _vscroll = tk.Scrollbar(root, orient="vertical", command=_canvas.yview)
+        _canvas.configure(yscrollcommand=_vscroll.set)
+        _vscroll.pack(side="right", fill="y")
+        _canvas.pack(side="left", fill="both", expand=True)
+        outer = tk.Frame(_canvas, padx=16, pady=12)
+        _outer_id = _canvas.create_window((0, 0), window=outer, anchor="nw")
+
+        def _on_outer_configure(event):
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            _canvas.itemconfig(_outer_id, width=event.width)
+
+        outer.bind("<Configure>", _on_outer_configure)
+        _canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            _canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        root.bind("<MouseWheel>", _on_mousewheel)
 
         def _section(parent, title):
             tk.Label(parent, text=title, anchor="w", font=("Arial", 9, "bold")).pack(
@@ -452,6 +472,47 @@ def show_settings_dialog() -> None:
 
         fc_interval.trace_add("write", _apply_fc_interval)
 
+        # CPU fan curve editor
+        curve_hdr_row = tk.Frame(fc_frame)
+        curve_hdr_row.pack(fill="x", pady=(8, 0))
+        tk.Label(curve_hdr_row, text="Fan curve:", width=14, anchor="w").pack(side="left")
+        tk.Label(curve_hdr_row, text="Temp °C", width=8, anchor="center",
+                 font=("Arial", 8, "bold")).pack(side="left")
+        tk.Label(curve_hdr_row, text="Fan %", width=8, anchor="center",
+                 font=("Arial", 8, "bold")).pack(side="left")
+
+        _fc_curve_vars = []
+        for _ct, _cp in _config.get("fan_control", {}).get("curve", []):
+            _ctv = tk.StringVar(master=root, value=str(_ct))
+            _cpv = tk.StringVar(master=root, value=str(_cp))
+            _fc_curve_vars.append((_ctv, _cpv))
+            _cr = tk.Frame(fc_frame)
+            _cr.pack(fill="x", pady=1)
+            tk.Label(_cr, width=14, anchor="w").pack(side="left")
+            tk.Entry(_cr, textvariable=_ctv, width=7).pack(side="left", padx=2)
+            tk.Entry(_cr, textvariable=_cpv, width=7).pack(side="left", padx=2)
+
+        def _apply_fc_curve():
+            try:
+                new_curve = sorted([
+                    [int(tv.get()), max(0, min(100, int(pv.get())))]
+                    for tv, pv in _fc_curve_vars
+                ])
+                if not new_curve:
+                    return
+                _config["fan_control"]["curve"] = new_curve
+                cfg.save_config(_config)
+                if fan_control.fan_control_is_active():
+                    fan_control.stop_fan_control()
+                    lhm_computer, lhm_lock = system_overlay.get_lhm_computer()
+                    if lhm_computer is not None:
+                        fan_control.start_fan_control(_config, lhm_computer, lhm_lock)
+            except (ValueError, TypeError) as e:
+                log.debug(f"Invalid CPU fan curve: {e}")
+
+        tk.Button(fc_frame, text="Apply Curve",
+                  command=_apply_fc_curve).pack(anchor="w", pady=(2, 6))
+
         # ── Section 5: GPU Fan Control ────────────────────────────────────────
         gfc_frame = _section(outer, "GPU Fan Control  (Nvidia only)")
 
@@ -539,6 +600,45 @@ def show_settings_dialog() -> None:
 
         gfc_interval.trace_add("write", _apply_gfc_interval)
 
+        # GPU fan curve editor
+        gcurve_hdr_row = tk.Frame(gfc_frame)
+        gcurve_hdr_row.pack(fill="x", pady=(8, 0))
+        tk.Label(gcurve_hdr_row, text="Fan curve:", width=14, anchor="w").pack(side="left")
+        tk.Label(gcurve_hdr_row, text="Temp °C", width=8, anchor="center",
+                 font=("Arial", 8, "bold")).pack(side="left")
+        tk.Label(gcurve_hdr_row, text="Fan %", width=8, anchor="center",
+                 font=("Arial", 8, "bold")).pack(side="left")
+
+        _gfc_curve_vars = []
+        for _gt, _gp in _config.get("gpu_fan_control", {}).get("curve", []):
+            _gtv = tk.StringVar(master=root, value=str(_gt))
+            _gpv = tk.StringVar(master=root, value=str(_gp))
+            _gfc_curve_vars.append((_gtv, _gpv))
+            _grr = tk.Frame(gfc_frame)
+            _grr.pack(fill="x", pady=1)
+            tk.Label(_grr, width=14, anchor="w").pack(side="left")
+            tk.Entry(_grr, textvariable=_gtv, width=7).pack(side="left", padx=2)
+            tk.Entry(_grr, textvariable=_gpv, width=7).pack(side="left", padx=2)
+
+        def _apply_gfc_curve():
+            try:
+                new_curve = sorted([
+                    [int(tv.get()), max(0, min(100, int(pv.get())))]
+                    for tv, pv in _gfc_curve_vars
+                ])
+                if not new_curve:
+                    return
+                _config["gpu_fan_control"]["curve"] = new_curve
+                cfg.save_config(_config)
+                if fan_control.gpu_fan_control_is_active():
+                    fan_control.stop_gpu_fan_control()
+                    fan_control.start_gpu_fan_control(_config)
+            except (ValueError, TypeError) as e:
+                log.debug(f"Invalid GPU fan curve: {e}")
+
+        tk.Button(gfc_frame, text="Apply Curve",
+                  command=_apply_gfc_curve).pack(anchor="w", pady=(2, 6))
+
         # ── Close: save key fields and slider defaults ────────────────────────
         def _close():
             global _settings_root
@@ -567,12 +667,6 @@ def show_settings_dialog() -> None:
         # ── Bottom buttons ────────────────────────────────────────────────────
         btn_frame = tk.Frame(outer, pady=6)
         btn_frame.pack(fill="x")
-
-        def _open_config():
-            import subprocess
-            subprocess.Popen(["notepad.exe", cfg.get_config_path()])
-
-        tk.Button(btn_frame, text="Open config.json", command=_open_config).pack(side="left")
 
         # All widgets built — allow trace callbacks to fire from now on
         _initing[0] = False
