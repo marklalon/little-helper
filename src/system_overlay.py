@@ -29,6 +29,7 @@ _lhm_cpu_temp  = None   # ISensor reference
 _lhm_cpu_power = None   # ISensor reference
 _lhm_ram_temps = []     # list of ISensor references (one per DIMM)
 _lhm_disk_temps = {}    # dict: {unique_disk_name: ISensor} for disk temperatures
+_lhm_disk_activity = {} # dict: {unique_disk_name: ISensor} for disk activity time percentage
 _lhm_disk_storage = {}  # dict: {unique_disk_name: storage object} for runtime disk naming
 _lhm_disk_display_name_lookup = {}
 _lhm_lock      = threading.Lock()  # serialises all LHM .NET object access
@@ -64,6 +65,20 @@ def _disk_temp_sensor_priority(sensor_name: str) -> tuple[int, int]:
     if "warning" in name:
         return (2, 0)
     if "critical" in name:
+        return (3, 0)
+    return (4, 0)
+
+
+def _disk_activity_sensor_priority(sensor_name: str) -> tuple[int, int]:
+    """Priority for selecting disk activity time sensor."""
+    name = (sensor_name or "").strip().lower()
+    if name == "active time":
+        return (0, 0)
+    if "active" in name and "time" in name:
+        return (1, 0)
+    if name == "load":
+        return (2, 0)
+    if "activity" in name or "utilization" in name or "usage" in name:
         return (3, 0)
     return (4, 0)
 
@@ -229,8 +244,33 @@ def _select_best_disk_temp_sensor(hardware):
     return selected_sensor
 
 
+def _get_disk_activity_sensor_candidates(hardware):
+    """Get all Load/Activity time sensors from a disk hardware node."""
+    candidates = []
+    for node in _iter_hardware_tree(hardware):
+        try:
+            node.Update()
+        except Exception:
+            pass
+        for sensor in node.Sensors:
+            sensor_type = sensor.SensorType.ToString()
+            # Load sensors typically represent disk activity percentage
+            if sensor_type in ("Load",):
+                candidates.append(sensor)
+    return candidates
+
+
+def _select_best_disk_activity_sensor(hardware):
+    """Select the best disk activity sensor from candidates."""
+    selected_sensor = None
+    for sensor in _get_disk_activity_sensor_candidates(hardware):
+        if selected_sensor is None or _disk_activity_sensor_priority(sensor.Name) < _disk_activity_sensor_priority(selected_sensor.Name):
+            selected_sensor = sensor
+    return selected_sensor
+
+
 def _refresh_lhm_storage_state(refresh_sensor_bindings: bool = False) -> None:
-    global _lhm_disk_display_name_lookup, _lhm_disk_storage, _lhm_disk_temps
+    global _lhm_disk_display_name_lookup, _lhm_disk_storage, _lhm_disk_temps, _lhm_disk_activity
 
     if _lhm_computer is None:
         return
@@ -255,6 +295,7 @@ def _refresh_lhm_storage_state(refresh_sensor_bindings: bool = False) -> None:
 
     updated_disk_storage = {}
     updated_disk_temps = {}
+    updated_disk_activity = {}
 
     for hardware, stor_obj in storage_nodes:
 
@@ -275,8 +316,16 @@ def _refresh_lhm_storage_state(refresh_sensor_bindings: bool = False) -> None:
         elif disk_name in _lhm_disk_temps:
             updated_disk_temps[disk_name] = _lhm_disk_temps[disk_name]
 
+        if refresh_sensor_bindings or disk_name not in _lhm_disk_activity:
+            selected_activity_sensor = _select_best_disk_activity_sensor(hardware)
+            if selected_activity_sensor is not None:
+                updated_disk_activity[disk_name] = selected_activity_sensor
+        elif disk_name in _lhm_disk_activity:
+            updated_disk_activity[disk_name] = _lhm_disk_activity[disk_name]
+
     _lhm_disk_storage = updated_disk_storage
     _lhm_disk_temps = updated_disk_temps
+    _lhm_disk_activity = updated_disk_activity
 
 
 def _assign_unique_disk_names(disk_names: list[str], serial_suffix_map: dict[str, list[str]] | None = None) -> list[str]:
@@ -337,7 +386,7 @@ def init_nvml() -> bool:
 
 def init_lhm() -> bool:
     """Attempt to initialise LibreHardwareMonitorLib for CPU/RAM/Disk sensors. Call once at startup."""
-    global _lhm_available, _lhm_computer, _lhm_cpu_temp, _lhm_cpu_power, _lhm_ram_temps, _lhm_disk_temps, _lhm_disk_storage, _lhm_disk_display_name_lookup
+    global _lhm_available, _lhm_computer, _lhm_cpu_temp, _lhm_cpu_power, _lhm_ram_temps, _lhm_disk_temps, _lhm_disk_activity, _lhm_disk_storage, _lhm_disk_display_name_lookup
     try:
         import clr
         # Find the DLL path (works for both source and PyInstaller frozen EXE)
@@ -357,6 +406,7 @@ def init_lhm() -> bool:
         _lhm_cpu_power = None
         _lhm_ram_temps = []
         _lhm_disk_temps = {}
+        _lhm_disk_activity = {}
         _lhm_disk_storage = {}
         _lhm_disk_display_name_lookup = {}
 
@@ -563,22 +613,31 @@ def get_system_stats() -> dict:
 
 
 def get_disk_stats() -> dict:
-    """Return only disk temperature statistics."""
-    result = {"disk_temps": {}}
+    """Return disk temperature and activity time statistics."""
+    result = {"disk_temps": {}, "disk_activity": {}}
     if not (_lhm_available and _lhm_computer is not None):
         return result
     try:
         with _lhm_lock:
             _refresh_lhm_storage_state()
-            disk_vals = {}
+            disk_temps = {}
+            disk_activity = {}
             for disk_name, sensor in _lhm_disk_temps.items():
                 try:
                     v = sensor.Value
                     if v is not None:
-                        disk_vals[disk_name] = float(v)
+                        disk_temps[disk_name] = float(v)
                 except Exception:
                     pass
-        result["disk_temps"] = _rename_disk_temp_values(disk_vals)
+            for disk_name, sensor in _lhm_disk_activity.items():
+                try:
+                    v = sensor.Value
+                    if v is not None:
+                        disk_activity[disk_name] = float(v)
+                except Exception:
+                    pass
+        result["disk_temps"] = _rename_disk_temp_values(disk_temps)
+        result["disk_activity"] = disk_activity
     except Exception as e:
         log.debug(f"get_disk_stats error: {e}")
     return result
@@ -721,6 +780,7 @@ def get_monitor_snapshot(max_age_ms: int = 500, type: str = "default") -> dict:
             return {
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "disk_temps": disk_stats["disk_temps"],
+                "disk_activity": disk_stats["disk_activity"],
             }
 
         if type == "fan":
