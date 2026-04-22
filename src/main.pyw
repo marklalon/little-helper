@@ -432,49 +432,7 @@ def show_settings_dialog() -> None:
         paste_mod.trace_add("write", _apply_hotkey_modifiers)
         ss_mod.trace_add("write", _apply_hotkey_modifiers)
 
-        # ── Section 2: GPU Power Limit ────────────────────────────────────────
-        gpu_frame = _section(outer, "GPU Power Limit  (Nvidia only)")
-
-        gpu_enabled = tk.BooleanVar(master=root, value=_config["gpu_power_limit"]["enabled"])
-        gpu_watts   = tk.IntVar(   master=root, value=_config["gpu_power_limit"]["watts"])
-
-        # Query GPU limits for Spinbox range
-        limits = gpu_power.get_gpu_power_limits()
-        w_min, w_max = (50, 500) if limits is None else (int(limits[0]), int(limits[1]))
-
-        row2 = tk.Frame(gpu_frame)
-        row2.pack(fill="x", pady=3)
-        gpu_cb = tk.Checkbutton(row2, text="Enable", variable=gpu_enabled)
-        gpu_cb.pack(side="left")
-
-        row3 = tk.Frame(gpu_frame)
-        row3.pack(fill="x", pady=3)
-        tk.Label(row3, text="Target watts:", width=14, anchor="w").pack(side="left")
-        gpu_spin = tk.Spinbox(row3, from_=w_min, to=w_max, increment=5,
-                              textvariable=gpu_watts, width=6)
-        gpu_spin.pack(side="left", padx=4)
-        gpu_watts_label = tk.Label(row3, text=f"(GPU range: {w_min}–{w_max} W)",
-                 font=("Arial", 8), fg="gray")
-        gpu_watts_label.pack(side="left")
-
-        def _toggle_gpu_power(*_):
-            state = "normal" if gpu_enabled.get() else "disabled"
-            gpu_spin.configure(state=state)
-            gpu_watts_label.configure(fg="#808080" if state == "disabled" else "gray")
-        gpu_enabled.trace_add("write", _toggle_gpu_power)
-        _toggle_gpu_power()
-
-        def _apply_gpu_power(*_):
-            if _initing[0]: return
-            _config["gpu_power_limit"]["enabled"] = gpu_enabled.get()
-            _config["gpu_power_limit"]["watts"]   = gpu_watts.get()
-            cfg.save_config(_config)
-            gpu_power.apply_gpu_power_limit(_config, notify_fn=_notify)
-
-        gpu_enabled.trace_add("write", _apply_gpu_power)
-        gpu_watts.trace_add("write", _apply_gpu_power)
-
-        # ── Section 3: Overlay ────────────────────────────────────────────────
+        # ── Section 2: Overlay ────────────────────────────────────────────────
         ov_frame = _section(outer, "System Monitor Overlay")
 
         ov_enabled  = tk.BooleanVar(master=root, value=_config["overlay"]["enabled"])
@@ -520,134 +478,49 @@ def show_settings_dialog() -> None:
         ov_opacity.trace_add("write", _apply_overlay)
         ov_refresh.trace_add("write", _apply_overlay)
 
-        # ── Section 4: Monitor Server ─────────────────────────────────────────
-        ms_frame = _section(outer, "Monitor Server")
+        # ── Section 3: GPU Power Limit ────────────────────────────────────────
+        gpu_frame = _section(outer, "GPU Power Limit  (Nvidia only)")
 
-        ms_cfg = _config.get("monitor_server", {})
-        ms_enabled = tk.BooleanVar(master=root, value=ms_cfg.get("enabled", False))
-        ms_host = tk.StringVar(master=root, value=ms_cfg.get("host", monitor_server.DEFAULT_HOST))
-        ms_port = tk.IntVar(master=root, value=ms_cfg.get("port", monitor_server.DEFAULT_PORT))
-        ms_token = tk.StringVar(master=root, value=ms_cfg.get("token", ""))
-        ms_hint = tk.StringVar(master=root)
+        gpu_enabled = tk.BooleanVar(master=root, value=_config["gpu_power_limit"]["enabled"])
+        gpu_watts   = tk.IntVar(   master=root, value=_config["gpu_power_limit"]["watts"])
 
-        row_ms0 = tk.Frame(ms_frame)
-        row_ms0.pack(fill="x", pady=3)
-        tk.Checkbutton(row_ms0, text="Enable", variable=ms_enabled).pack(side="left")
+        # Query GPU limits for Spinbox range
+        limits = gpu_power.get_gpu_power_limits()
+        w_min, w_max = (50, 500) if limits is None else (int(limits[0]), int(limits[1]))
 
-        row_ms1 = tk.Frame(ms_frame)
-        row_ms1.pack(fill="x", pady=3)
-        tk.Label(row_ms1, text="Bind IP:", width=14, anchor="w").pack(side="left")
-        ms_host_entry = tk.Entry(row_ms1, textvariable=ms_host, width=18)
-        ms_host_entry.pack(side="left", padx=4)
+        row2 = tk.Frame(gpu_frame)
+        row2.pack(fill="x", pady=3)
+        gpu_cb = tk.Checkbutton(row2, text="Enable", variable=gpu_enabled)
+        gpu_cb.pack(side="left")
 
-        row_ms2 = tk.Frame(ms_frame)
-        row_ms2.pack(fill="x", pady=3)
-        tk.Label(row_ms2, text="Port:", width=14, anchor="w").pack(side="left")
-        ms_port_spin = tk.Spinbox(row_ms2, from_=1, to=65535, increment=1,
-                                  textvariable=ms_port, width=8)
-        ms_port_spin.pack(side="left", padx=4)
+        row3 = tk.Frame(gpu_frame)
+        row3.pack(fill="x", pady=3)
+        tk.Label(row3, text="Target watts:", width=14, anchor="w").pack(side="left")
+        gpu_spin = tk.Spinbox(row3, from_=w_min, to=w_max, increment=5,
+                              textvariable=gpu_watts, width=6)
+        gpu_spin.pack(side="left", padx=4)
+        gpu_watts_label = tk.Label(row3, text=f"(GPU range: {w_min}–{w_max} W)",
+                 font=("Arial", 8), fg="gray")
+        gpu_watts_label.pack(side="left")
 
-        row_ms3 = tk.Frame(ms_frame)
-        row_ms3.pack(fill="x", pady=3)
-        tk.Label(row_ms3, text="Token:", width=14, anchor="w").pack(side="left")
-        ms_token_entry = tk.Entry(row_ms3, textvariable=ms_token, width=24)
-        ms_token_entry.pack(side="left", padx=4)
+        def _toggle_gpu_power(*_):
+            state = "normal" if gpu_enabled.get() else "disabled"
+            gpu_spin.configure(state=state)
+            gpu_watts_label.configure(fg="#808080" if state == "disabled" else "gray")
+        gpu_enabled.trace_add("write", _toggle_gpu_power)
+        _toggle_gpu_power()
 
-        tk.Label(
-            ms_frame,
-            text="Leave token blank to disable authentication.",
-            font=("Arial", 8),
-            fg="gray",
-            anchor="w",
-            justify="left",
-        ).pack(fill="x", pady=(0, 2))
-
-        ms_hint_label = tk.Label(
-            ms_frame,
-            textvariable=ms_hint,
-            font=("Arial", 8),
-            fg="gray",
-            anchor="w",
-            justify="left",
-            wraplength=390,
-        )
-        ms_hint_label.pack(fill="x", pady=(0, 4))
-
-        def _collect_monitor_server_config() -> dict:
-            try:
-                port_value = ms_port.get()
-            except tk.TclError:
-                port_value = monitor_server.DEFAULT_PORT
-            return monitor_server.normalize_monitor_server_config(
-                {
-                    "monitor_server": {
-                        "enabled": ms_enabled.get(),
-                        "host": ms_host.get(),
-                        "port": port_value,
-                        "token": ms_token.get(),
-                    }
-                }
-            )
-
-        def _update_monitor_server_hint(*_):
-            preview_cfg = _collect_monitor_server_config()
-            urls = monitor_server.get_monitor_urls(preview_cfg)
-            auth_mode = "token required" if preview_cfg.get("token") else "no auth"
-            state = "enabled" if preview_cfg.get("enabled") else "disabled"
-            ms_hint.set(
-                f"HTTP: {urls['http']}\nWS: {urls['websocket']}\nState: {state}, {auth_mode}"
-            )
-
-        def _apply_monitor_server_settings(notify_user: bool = True):
-            if _initing[0]:
-                return
-            new_cfg = _collect_monitor_server_config()
-            old_cfg = dict(_config.get("monitor_server", {}))
-            _config["monitor_server"] = new_cfg
+        def _apply_gpu_power(*_):
+            if _initing[0]: return
+            _config["gpu_power_limit"]["enabled"] = gpu_enabled.get()
+            _config["gpu_power_limit"]["watts"]   = gpu_watts.get()
             cfg.save_config(_config)
+            gpu_power.apply_gpu_power_limit(_config, notify_fn=_notify)
 
-            try:
-                if new_cfg.get("enabled"):
-                    if monitor_server.monitor_server_is_running() and old_cfg != new_cfg:
-                        monitor_server.restart_monitor_server(_config)
-                    elif not monitor_server.monitor_server_is_running():
-                        monitor_server.start_monitor_server(_config)
-                else:
-                    monitor_server.stop_monitor_server()
-                if notify_user:
-                    urls = monitor_server.get_monitor_urls(new_cfg)
-                    if new_cfg.get("enabled"):
-                        _notify(
-                            f"Monitor server active\nHTTP: {urls['http']}\nWS: {urls['websocket']}",
-                            "Monitor Server",
-                        )
-                    else:
-                        _notify("Monitor server stopped", "Monitor Server")
-            except Exception as e:
-                log.error(f"Error applying monitor server settings: {e}", exc_info=True)
-                if notify_user:
-                    _notify(f"Monitor server error: {e}", "Monitor Server")
+        gpu_enabled.trace_add("write", _apply_gpu_power)
+        gpu_watts.trace_add("write", _apply_gpu_power)
 
-        for _var in (ms_enabled, ms_host, ms_port, ms_token):
-            _var.trace_add("write", _update_monitor_server_hint)
-        _update_monitor_server_hint()
-
-        ms_buttons_row = tk.Frame(ms_frame)
-        ms_buttons_row.pack(fill="x", pady=(4, 0))
-
-        ms_apply_btn = tk.Button(
-            ms_buttons_row,
-            text="Apply Changes",
-            command=lambda: _apply_monitor_server_settings(notify_user=True),
-        )
-        ms_apply_btn.pack(side="left", padx=2)
-
-        ms_enabled.trace_add(
-            "write",
-            lambda *_: None if _initing[0] else _apply_monitor_server_settings(notify_user=True),
-        )
-
-        # ── Section 5: CPU Fan Control ────────────────────────────────────────
+        # ── Section 4: CPU Fan Control ────────────────────────────────────────
         fc_frame = _section(outer, "CPU Fan Control")
 
         fc_cfg      = _config.get("fan_control", {})
@@ -801,7 +674,7 @@ def show_settings_dialog() -> None:
         fc_enabled.trace_add("write", _toggle_fc_enabled)
         _toggle_fc_enabled()
 
-        # ── Section 6: GPU Fan Control ────────────────────────────────────────
+        # ── Section 5: GPU Fan Control ────────────────────────────────────────
         gfc_frame = _section(outer, "GPU Fan Control  (Nvidia only)")
 
         gfc_cfg      = _config.get("gpu_fan_control", {})
@@ -945,7 +818,7 @@ def show_settings_dialog() -> None:
         gfc_enabled.trace_add("write", _toggle_gfc_enabled)
         _toggle_gfc_enabled()
 
-        # ── Section 7: Auto Sleep ──────────────────────────────────────────────
+        # ── Section 6: Auto Sleep ──────────────────────────────────────────────
         as_frame = _section(outer, "Auto Sleep")
 
         as_cfg           = _config.get("auto_sleep", {})
@@ -1044,6 +917,133 @@ def show_settings_dialog() -> None:
 
         as_enabled.trace_add("write", _toggle_as_enabled)
         _toggle_as_enabled()
+
+        # ── Section 8: Monitor Server ─────────────────────────────────────────
+        ms_frame = _section(outer, "Monitor Server")
+
+        ms_cfg = _config.get("monitor_server", {})
+        ms_enabled = tk.BooleanVar(master=root, value=ms_cfg.get("enabled", False))
+        ms_host = tk.StringVar(master=root, value=ms_cfg.get("host", monitor_server.DEFAULT_HOST))
+        ms_port = tk.IntVar(master=root, value=ms_cfg.get("port", monitor_server.DEFAULT_PORT))
+        ms_token = tk.StringVar(master=root, value=ms_cfg.get("token", ""))
+        ms_hint = tk.StringVar(master=root)
+
+        row_ms0 = tk.Frame(ms_frame)
+        row_ms0.pack(fill="x", pady=3)
+        tk.Checkbutton(row_ms0, text="Enable", variable=ms_enabled).pack(side="left")
+
+        row_ms1 = tk.Frame(ms_frame)
+        row_ms1.pack(fill="x", pady=3)
+        tk.Label(row_ms1, text="Bind IP:", width=14, anchor="w").pack(side="left")
+        ms_host_entry = tk.Entry(row_ms1, textvariable=ms_host, width=18)
+        ms_host_entry.pack(side="left", padx=4)
+
+        row_ms2 = tk.Frame(ms_frame)
+        row_ms2.pack(fill="x", pady=3)
+        tk.Label(row_ms2, text="Port:", width=14, anchor="w").pack(side="left")
+        ms_port_spin = tk.Spinbox(row_ms2, from_=1, to=65535, increment=1,
+                                  textvariable=ms_port, width=8)
+        ms_port_spin.pack(side="left", padx=4)
+
+        row_ms3 = tk.Frame(ms_frame)
+        row_ms3.pack(fill="x", pady=3)
+        tk.Label(row_ms3, text="Token:", width=14, anchor="w").pack(side="left")
+        ms_token_entry = tk.Entry(row_ms3, textvariable=ms_token, width=24)
+        ms_token_entry.pack(side="left", padx=4)
+
+        tk.Label(
+            ms_frame,
+            text="Leave token blank to disable authentication.",
+            font=("Arial", 8),
+            fg="gray",
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(0, 2))
+
+        ms_hint_label = tk.Label(
+            ms_frame,
+            textvariable=ms_hint,
+            font=("Arial", 8),
+            fg="gray",
+            anchor="w",
+            justify="left",
+            wraplength=390,
+        )
+        ms_hint_label.pack(fill="x", pady=(0, 4))
+
+        def _collect_monitor_server_config() -> dict:
+            try:
+                port_value = ms_port.get()
+            except tk.TclError:
+                port_value = monitor_server.DEFAULT_PORT
+            return monitor_server.normalize_monitor_server_config(
+                {
+                    "monitor_server": {
+                        "enabled": ms_enabled.get(),
+                        "host": ms_host.get(),
+                        "port": port_value,
+                        "token": ms_token.get(),
+                    }
+                }
+            )
+
+        def _update_monitor_server_hint(*_):
+            preview_cfg = _collect_monitor_server_config()
+            urls = monitor_server.get_monitor_urls(preview_cfg)
+            auth_mode = "token required" if preview_cfg.get("token") else "no auth"
+            state = "enabled" if preview_cfg.get("enabled") else "disabled"
+            ms_hint.set(
+                f"HTTP: {urls['http']}\nWS: {urls['websocket']}\nState: {state}, {auth_mode}"
+            )
+
+        def _apply_monitor_server_settings(notify_user: bool = True):
+            if _initing[0]:
+                return
+            new_cfg = _collect_monitor_server_config()
+            old_cfg = dict(_config.get("monitor_server", {}))
+            _config["monitor_server"] = new_cfg
+            cfg.save_config(_config)
+
+            try:
+                if new_cfg.get("enabled"):
+                    if monitor_server.monitor_server_is_running() and old_cfg != new_cfg:
+                        monitor_server.restart_monitor_server(_config)
+                    elif not monitor_server.monitor_server_is_running():
+                        monitor_server.start_monitor_server(_config)
+                else:
+                    monitor_server.stop_monitor_server()
+                if notify_user:
+                    urls = monitor_server.get_monitor_urls(new_cfg)
+                    if new_cfg.get("enabled"):
+                        _notify(
+                            f"Monitor server active\nHTTP: {urls['http']}\nWS: {urls['websocket']}",
+                            "Monitor Server",
+                        )
+                    else:
+                        _notify("Monitor server stopped", "Monitor Server")
+            except Exception as e:
+                log.error(f"Error applying monitor server settings: {e}", exc_info=True)
+                if notify_user:
+                    _notify(f"Monitor server error: {e}", "Monitor Server")
+
+        for _var in (ms_enabled, ms_host, ms_port, ms_token):
+            _var.trace_add("write", _update_monitor_server_hint)
+        _update_monitor_server_hint()
+
+        ms_buttons_row = tk.Frame(ms_frame)
+        ms_buttons_row.pack(fill="x", pady=(4, 0))
+
+        ms_apply_btn = tk.Button(
+            ms_buttons_row,
+            text="Apply Changes",
+            command=lambda: _apply_monitor_server_settings(notify_user=True),
+        )
+        ms_apply_btn.pack(side="left", padx=2)
+
+        ms_enabled.trace_add(
+            "write",
+            lambda *_: None if _initing[0] else _apply_monitor_server_settings(notify_user=True),
+        )
 
         # ── Close: save key fields and slider defaults ────────────────────────
         def _close():
