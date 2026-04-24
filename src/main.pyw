@@ -952,11 +952,13 @@ def show_settings_dialog() -> None:
         ms_host = tk.StringVar(master=root, value=ms_cfg.get("host", monitor_server.DEFAULT_HOST))
         ms_port = tk.IntVar(master=root, value=ms_cfg.get("port", monitor_server.DEFAULT_PORT))
         ms_token = tk.StringVar(master=root, value=ms_cfg.get("token", ""))
+        ms_mdns = tk.BooleanVar(master=root, value=ms_cfg.get("mdns", True))
         ms_hint = tk.StringVar(master=root)
 
         row_ms0 = tk.Frame(ms_frame)
         row_ms0.pack(fill="x", pady=3)
         tk.Checkbutton(row_ms0, text="Enable", variable=ms_enabled).pack(side="left")
+        tk.Checkbutton(row_ms0, text="mDNS Broadcast", variable=ms_mdns).pack(side="left", padx=(16, 0))
 
         row_ms1 = tk.Frame(ms_frame)
         row_ms1.pack(fill="x", pady=3)
@@ -979,7 +981,7 @@ def show_settings_dialog() -> None:
 
         tk.Label(
             ms_frame,
-            text="Leave token blank to disable authentication.",
+            text="Leave token blank to disable authentication. mDNS broadcasts service on local network.",
             font=("Arial", 8),
             fg="gray",
             anchor="w",
@@ -1009,6 +1011,7 @@ def show_settings_dialog() -> None:
                         "host": ms_host.get(),
                         "port": port_value,
                         "token": ms_token.get(),
+                        "mdns": ms_mdns.get(),
                     }
                 }
             )
@@ -1018,8 +1021,9 @@ def show_settings_dialog() -> None:
             urls = monitor_server.get_monitor_urls(preview_cfg)
             auth_mode = "token required" if preview_cfg.get("token") else "no auth"
             state = "enabled" if preview_cfg.get("enabled") else "disabled"
+            mdns_state = "on" if preview_cfg.get("mdns") else "off"
             ms_hint.set(
-                f"HTTP: {urls['http']}\nWS: {urls['websocket']}\nState: {state}, {auth_mode}"
+                f"HTTP: {urls['http']}\nWS: {urls['websocket']}\nState: {state}, {auth_mode}, mDNS: {mdns_state}"
             )
 
         def _apply_monitor_server_settings(notify_user: bool = True):
@@ -1052,7 +1056,7 @@ def show_settings_dialog() -> None:
                 if notify_user:
                     _notify(f"Monitor server error: {e}", "Monitor Server")
 
-        for _var in (ms_enabled, ms_host, ms_port, ms_token):
+        for _var in (ms_enabled, ms_host, ms_port, ms_token, ms_mdns):
             _var.trace_add("write", _update_monitor_server_hint)
         _update_monitor_server_hint()
 

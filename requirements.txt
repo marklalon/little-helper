@@ -9,3 +9,4 @@ pythonnet
 starlette
 uvicorn
 websockets
+zeroconf

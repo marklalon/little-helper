@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
         "host": "0.0.0.0",
         "port": 9980,
         "token": "",
+        "mdns": True,
     },
     "fan_control": {
         "enabled": True,
