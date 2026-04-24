@@ -97,7 +97,12 @@ class SystemOverlayHelpersTest(unittest.TestCase):
         system_overlay._snapshot_cache_at = self._old_cache_at
         system_overlay._lhm_computer = None
         system_overlay._lhm_available = False
+        system_overlay._disk_type_cache = {}
+        system_overlay._disk_wakeup_targets = {}
+        system_overlay._disk_inventory_signature = ()
+        system_overlay._hdd_wakeup_drive_letters = ()
         system_overlay._lhm_disk_temps = {}
+        system_overlay._lhm_disk_activity = {}
         system_overlay._lhm_disk_storage = {}
         system_overlay._lhm_disk_display_name_lookup = {}
         system_overlay._overlay_instance = None
@@ -284,6 +289,31 @@ class SystemOverlayHelpersTest(unittest.TestCase):
         self.assertEqual(select_sensor.call_count, 1)
         self.assertIs(system_overlay._lhm_disk_temps["Disk A"], sensor)
 
+    def test_refresh_lhm_storage_state_primes_disk_wakeup_cache_once_per_storage_signature(self):
+        hardware = _FakeHardware(
+            "Disk A",
+            storage=_FakeStorage("SERIAL0001", 1, "Disk A"),
+        )
+
+        system_overlay._lhm_computer = _FakeComputer([hardware])
+        system_overlay._lhm_disk_temps = {}
+        system_overlay._lhm_disk_activity = {}
+        system_overlay._lhm_disk_storage = {}
+        system_overlay._lhm_disk_display_name_lookup = {}
+
+        with mock.patch.object(
+            system_overlay,
+            "_get_windows_disk_inventory",
+            return_value={1: {"disk_type": "HDD", "drive_letters": ("D",)}},
+        ) as get_inventory:
+            system_overlay._refresh_lhm_storage_state(refresh_sensor_bindings=True)
+            system_overlay._refresh_lhm_storage_state()
+
+        self.assertEqual(get_inventory.call_count, 1)
+        self.assertEqual(system_overlay._disk_type_cache[1], "HDD")
+        self.assertEqual(system_overlay._disk_wakeup_targets[1], ("D",))
+        self.assertEqual(system_overlay._hdd_wakeup_drive_letters, ("D",))
+
     def test_rename_disk_temp_values_applies_duplicate_suffixes_to_payload_keys(self):
         disk_values = {
             "ZHITAI Ti600 4TB": 46.85,
@@ -299,6 +329,39 @@ class SystemOverlayHelpersTest(unittest.TestCase):
                 "Samsung SSD 980 PRO 2TB": 40.85,
             },
         )
+
+    def test_get_disk_stats_wakes_cached_hdd_without_redetecting_disk_type(self):
+        temp_sensor = _FakeSensor("Temperature", value=41.5)
+        activity_sensor = _FakeSensor("Active Time", sensor_type="Load", value=12.0)
+
+        class _NoStorageIteration(dict):
+            def items(self):
+                raise AssertionError("unexpected storage iteration")
+
+        system_overlay._lhm_available = True
+        system_overlay._lhm_computer = object()
+        system_overlay._lhm_disk_storage = _NoStorageIteration()
+        system_overlay._lhm_disk_temps = {
+            "Disk A": temp_sensor,
+            "Disk B": _FakeSensor("Temperature", value=39.0),
+        }
+        system_overlay._lhm_disk_activity = {
+            "Disk A": activity_sensor,
+        }
+        system_overlay._disk_type_cache = {1: "HDD", 2: "SSD"}
+        system_overlay._disk_wakeup_targets = {1: ("D",), 2: ("C",)}
+        system_overlay._hdd_wakeup_drive_letters = ("D",)
+
+        with mock.patch.object(system_overlay, "_refresh_lhm_storage_state") as refresh_state:
+            with mock.patch.object(system_overlay, "_detect_disk_type_via_wmi", side_effect=AssertionError("unexpected redetect")):
+                with mock.patch.object(system_overlay, "_get_drive_letter_from_number", side_effect=AssertionError("unexpected drive lookup")):
+                    with mock.patch.object(system_overlay, "_wake_hdd_via_io", return_value=True) as wake_hdd:
+                        result = system_overlay.get_disk_stats()
+
+        refresh_state.assert_called_once_with()
+        wake_hdd.assert_called_once_with("D")
+        self.assertEqual(result["disk_temps"]["Disk A"], 41.5)
+        self.assertEqual(result["disk_activity"]["Disk A"], 12.0)
 
     def test_get_lhm_disk_serial_suffix_map_prefers_runtime_storage_serials(self):
         system_overlay._lhm_disk_storage = {

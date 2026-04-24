@@ -11,6 +11,7 @@ import queue
 import time
 import threading
 import logging
+import subprocess
 from collections import Counter, defaultdict
 import tkinter as tk
 from tkinter import font as tkfont
@@ -33,6 +34,13 @@ _lhm_disk_activity = {} # dict: {unique_disk_name: ISensor} for disk activity ti
 _lhm_disk_storage = {}  # dict: {unique_disk_name: storage object} for runtime disk naming
 _lhm_disk_display_name_lookup = {}
 _lhm_lock      = threading.Lock()  # serialises all LHM .NET object access
+
+# --- Disk wake-up state (HDD management) ---
+_disk_type_cache = {}   # {drive_number: "HDD"|"SSD"|"Unknown"} - cached disk types
+_disk_wakeup_targets = {}  # {drive_number: tuple[str, ...]} - cached logical drives for wake-up
+_disk_inventory_signature = ()  # tuple[int, ...] of current LHM drive numbers for cache invalidation
+_hdd_wakeup_drive_letters = ()  # tuple[str, ...] - cached drive letters for HDD wake-up only
+_disk_wakeup_lock = threading.Lock()  # serialises disk wake-up operations
 _ui_root       = None
 _ui_thread_id  = None
 _ui_tasks: queue.Queue = queue.Queue()
@@ -323,6 +331,8 @@ def _refresh_lhm_storage_state(refresh_sensor_bindings: bool = False) -> None:
         elif disk_name in _lhm_disk_activity:
             updated_disk_activity[disk_name] = _lhm_disk_activity[disk_name]
 
+    _refresh_disk_wakeup_cache(updated_disk_storage)
+
     _lhm_disk_storage = updated_disk_storage
     _lhm_disk_temps = updated_disk_temps
     _lhm_disk_activity = updated_disk_activity
@@ -358,6 +368,218 @@ def _assign_unique_disk_names(disk_names: list[str], serial_suffix_map: dict[str
 
 def _rename_disk_temp_values(disk_values: dict[str, float]) -> dict[str, float]:
     return dict(disk_values)
+
+
+def _classify_disk_media_type(media_type) -> str:
+    if media_type is None:
+        return "Unknown"
+
+    media_str = str(media_type).strip().lower()
+    if "ssd" in media_str or "nvme" in media_str or "solid" in media_str:
+        return "SSD"
+    if "fixed hard disk" in media_str or "hard disk" in media_str:
+        return "HDD"
+
+    try:
+        media_int = int(media_type)
+    except (TypeError, ValueError):
+        return "Unknown"
+
+    if media_int == 3:
+        return "HDD"
+    if media_int == 4:
+        return "SSD"
+    return "Unknown"
+
+
+def _escape_wmi_associator_value(value) -> str:
+    return str(value or "").replace("\\", "\\\\")
+
+
+def _logical_disk_name_to_letter(name) -> str | None:
+    text = str(name or "").strip().rstrip(":").upper()
+    if len(text) == 1 and text.isalpha():
+        return text
+    return None
+
+
+def _get_disk_logical_drive_letters(wmi_client, disk_device_id) -> tuple[str, ...]:
+    if not disk_device_id:
+        return ()
+
+    letters = []
+    seen = set()
+    escaped_disk_id = _escape_wmi_associator_value(disk_device_id)
+    partitions = wmi_client.query(
+        f'ASSOCIATORS OF {{Win32_DiskDrive.DeviceID="{escaped_disk_id}"}} '
+        'WHERE AssocClass = Win32_DiskDriveToDiskPartition'
+    )
+    for partition in partitions:
+        partition_id = getattr(partition, 'DeviceID', None)
+        if not partition_id:
+            continue
+
+        escaped_partition_id = _escape_wmi_associator_value(partition_id)
+        logical_disks = wmi_client.query(
+            f'ASSOCIATORS OF {{Win32_DiskPartition.DeviceID="{escaped_partition_id}"}} '
+            'WHERE AssocClass = Win32_LogicalDiskToPartition'
+        )
+        for logical_disk in logical_disks:
+            drive_letter = _logical_disk_name_to_letter(getattr(logical_disk, 'Name', None))
+            if drive_letter and drive_letter not in seen:
+                seen.add(drive_letter)
+                letters.append(drive_letter)
+
+    return tuple(letters)
+
+
+def _get_windows_disk_inventory() -> dict[int, dict[str, object]]:
+    inventory: dict[int, dict[str, object]] = {}
+    try:
+        import wmi
+
+        w = wmi.WMI()
+        disks = w.query("SELECT DeviceID, Index, MediaType FROM Win32_DiskDrive")
+        for disk in disks:
+            drive_number = getattr(disk, 'Index', None)
+            try:
+                drive_number = int(drive_number)
+            except (TypeError, ValueError):
+                continue
+
+            inventory[drive_number] = {
+                "disk_type": _classify_disk_media_type(getattr(disk, 'MediaType', None)),
+                "drive_letters": _get_disk_logical_drive_letters(w, getattr(disk, 'DeviceID', None)),
+            }
+    except Exception as exc:
+        log.debug(f"Failed to build Windows disk inventory: {exc}")
+
+    return inventory
+
+
+def _refresh_disk_wakeup_cache(storages: dict[str, object] | None = None) -> None:
+    global _disk_inventory_signature, _disk_type_cache, _disk_wakeup_targets, _hdd_wakeup_drive_letters
+
+    storage_map = storages if storages is not None else _lhm_disk_storage
+    drive_numbers = []
+    for storage in (storage_map or {}).values():
+        if storage is None:
+            continue
+        drive_number = getattr(storage, 'DriveNumber', None)
+        try:
+            drive_numbers.append(int(drive_number))
+        except (TypeError, ValueError):
+            continue
+
+    signature = tuple(sorted(set(drive_numbers)))
+    if not signature:
+        _disk_inventory_signature = ()
+        _disk_wakeup_targets = {}
+        _hdd_wakeup_drive_letters = ()
+        return
+
+    cache_complete = (
+        signature == _disk_inventory_signature
+        and all(drive_number in _disk_type_cache for drive_number in signature)
+        and all(drive_number in _disk_wakeup_targets for drive_number in signature)
+    )
+    if cache_complete:
+        return
+
+    inventory = _get_windows_disk_inventory()
+    updated_types = {}
+    updated_targets = {}
+    for drive_number in signature:
+        entry = inventory.get(drive_number, {})
+        updated_types[drive_number] = entry.get("disk_type", "Unknown")
+        updated_targets[drive_number] = tuple(entry.get("drive_letters", ()))
+
+    _disk_type_cache.update(updated_types)
+    _disk_wakeup_targets.update(updated_targets)
+    _disk_inventory_signature = signature
+    _hdd_wakeup_drive_letters = tuple(
+        drive_letter
+        for drive_number in signature
+        if _disk_type_cache.get(drive_number) == "HDD"
+        for drive_letter in _disk_wakeup_targets.get(drive_number, ())
+    )
+
+
+def _detect_disk_type_via_wmi(drive_number: int) -> str:
+    """Detect if disk is HDD or SSD via Windows WMI.
+    
+    Args:
+        drive_number: Physical disk index from Storage object (0, 1, 2, ...)
+        
+    Returns:
+        "HDD", "SSD", or "Unknown"
+        
+    MediaType values from Win32_DiskDrive:
+    - 3: Internal Fixed Disk (HDD)
+    - 4: Removable Media / SSD
+    - 5: External Hard Disk
+    - Enum name: "Fixed hard disk media", "Removable media other than floppy", etc.
+    """
+    # Check cache first
+    if drive_number in _disk_type_cache:
+        return _disk_type_cache[drive_number]
+
+    result = "Unknown"
+    try:
+        inventory = _get_windows_disk_inventory()
+        if drive_number in inventory:
+            result = inventory[drive_number].get("disk_type", "Unknown")
+            _disk_wakeup_targets[drive_number] = tuple(inventory[drive_number].get("drive_letters", ()))
+            log.debug(f"Disk #{drive_number}: cached inventory -> {result}")
+        else:
+            log.debug(f"No disk found with Index={drive_number} in WMI")
+    except Exception as e:
+        log.debug(f"Failed to detect disk type for drive #{drive_number}: {e}")
+
+    _disk_type_cache[drive_number] = result
+    return result
+
+
+def _get_drive_letter_from_number(drive_number: int) -> str | None:
+    """Map physical disk number to the first cached drive letter.
+    
+    Args:
+        drive_number: Physical disk index (0=first disk, 1=second disk, ...)
+        
+    Returns:
+        Drive letter (e.g., "C", "D") or None if not found
+    """
+    drive_letters = _disk_wakeup_targets.get(drive_number, ())
+    if drive_letters:
+        return drive_letters[0]
+    return None
+
+
+def _wake_hdd_via_io(drive_letter: str) -> bool:
+    """Wake HDD by performing small I/O read on disk root.
+    
+    This triggers Windows driver to spin up the disk.
+    
+    Args:
+        drive_letter: Drive letter (e.g., "C", "D") without colon
+        
+    Returns:
+        True if operation completed, False on error
+    """
+    try:
+        import pathlib
+        root_path = pathlib.Path(f"{drive_letter}:\\")
+        
+        if root_path.exists():
+            # Trigger disk I/O by listing root directory
+            # This causes Windows to wake up the disk if it's in sleep mode
+            list(root_path.iterdir())
+            log.debug(f"Woke up disk {drive_letter}: via I/O")
+            return True
+    except Exception as e:
+        log.debug(f"Failed to wake up disk {drive_letter}: {e}")
+    
+    return False
 
 
 def init_nvml() -> bool:
@@ -613,13 +835,32 @@ def get_system_stats() -> dict:
 
 
 def get_disk_stats() -> dict:
-    """Return disk temperature and activity time statistics."""
+    """Return disk temperature and activity time statistics.
+    
+    Before reading HDD status, wake them up via I/O to ensure accurate readings.
+    Non-HDD drives are skipped.
+    """
     result = {"disk_temps": {}, "disk_activity": {}}
     if not (_lhm_available and _lhm_computer is not None):
         return result
     try:
         with _lhm_lock:
             _refresh_lhm_storage_state()
+            
+            # --- HDD Wake-up Phase ---
+            # Before reading sensors, wake up any HDD drives
+            try:
+                with _disk_wakeup_lock:
+                    for drive_letter in _hdd_wakeup_drive_letters:
+                        try:
+                            if _wake_hdd_via_io(drive_letter):
+                                continue
+                        except Exception as e:
+                            log.debug(f"Error waking HDD {drive_letter}: {e}")
+            except Exception as e:
+                log.debug(f"HDD wake-up phase error: {e}")
+            
+            # --- Normal sensor reading phase ---
             disk_temps = {}
             disk_activity = {}
             for disk_name, sensor in _lhm_disk_temps.items():
