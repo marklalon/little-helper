@@ -49,6 +49,7 @@ DEFAULT_WS_INTERVAL_MS = 1000
 MIN_WS_INTERVAL_MS = 200
 MAX_WS_INTERVAL_MS = 60000
 MDNS_SERVICE_TYPE = "_lhm._tcp.local."
+MDNS_WATCH_INTERVAL_SEC = 10.0
 
 
 def monitor_server_dependencies_available() -> tuple[bool, str | None]:
@@ -85,48 +86,85 @@ def get_monitor_urls(server_cfg: dict) -> dict:
     }
 
 
-def _get_local_ip() -> str:
-    """Best-effort local IP address for mDNS registration.
+_MDNS_172_16_NET = None  # lazily initialised IPv4Network for 172.16/12
 
-    Prefers standard private-network addresses (192.168.x.x, 10.x.x.x,
-    172.16-31.x.x) over virtual adapters such as WSL2 / Hyper-V which
-    often use 198.18.x.x or other unusual ranges.
+
+def _get_local_ip() -> str | None:
+    """Pick the best local IPv4 for mDNS, or None if none is usable.
+
+    Priority (lower wins):
+      0: 192.168.x.x         (typical home/office LAN)
+      1: 10.x.x.x            (corporate LAN)
+      2: 172.16-31.x.x       (RFC1918 — but on Windows usually Docker/WSL/Hyper-V)
+      3: other private ranges
+      4: public addresses
+    Skips loopback, APIPA (169.254/16), and adapters reported as down.
     """
     import ipaddress
 
-    # Prefer standard RFC-1918 private addresses over virtual adapter IPs
-    _PREFERRED_PREFIXES = ("192.168.", "10.", "172.16.", "172.17.",
-                           "172.18.", "172.19.", "172.2", "172.3")
+    global _MDNS_172_16_NET
+    if _MDNS_172_16_NET is None:
+        _MDNS_172_16_NET = ipaddress.IPv4Network("172.16.0.0/12")
 
     try:
         import psutil
-        candidates: list[tuple[int, str]] = []  # (priority, ip)
-        for stats in psutil.net_if_addrs().values():
-            for addr in stats:
+    except Exception:
+        psutil = None
+
+    if psutil is not None:
+        try:
+            if_stats = psutil.net_if_stats()
+        except Exception:
+            if_stats = {}
+        try:
+            iter_addrs = list(psutil.net_if_addrs().items())
+        except Exception:
+            iter_addrs = []
+
+        candidates: list[tuple[int, str, str]] = []  # (priority, nic, ip)
+        for nic, addrs in iter_addrs:
+            nic_info = if_stats.get(nic)
+            if nic_info is not None and not nic_info.isup:
+                continue
+            for addr in addrs:
                 if addr.family != socket.AF_INET:
                     continue
                 ip = addr.address
-                if ip.startswith("127."):
+                if not ip or ip.startswith("127.") or ip.startswith("169.254."):
                     continue
-                # Priority: preferred private prefixes get rank 0, others rank 1
-                priority = 0 if ip.startswith(_PREFERRED_PREFIXES) else 1
-                candidates.append((priority, ip))
-        if candidates:
-            candidates.sort(key=lambda c: c[0])
-            return candidates[0][1]
-    except Exception:
-        pass
+                try:
+                    ip_obj = ipaddress.IPv4Address(ip)
+                except Exception:
+                    continue
+                if not ip_obj.is_private:
+                    priority = 4
+                elif ip.startswith("192.168."):
+                    priority = 0
+                elif ip.startswith("10."):
+                    priority = 1
+                elif ip_obj in _MDNS_172_16_NET:
+                    priority = 2
+                else:
+                    priority = 3
+                candidates.append((priority, nic, ip))
 
-    # Fallback: UDP connect trick (may return WSL2 virtual IP on some systems)
+        if candidates:
+            # Stable secondary sort by NIC name keeps the choice deterministic
+            # across runs when two adapters share the same priority tier.
+            candidates.sort(key=lambda c: (c[0], c[1]))
+            return candidates[0][2]
+
+    # Fallback: UDP connect trick. Reject anything we'd have filtered above.
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+                return ip
     except Exception:
-        try:
-            return socket.gethostbyname(socket.gethostname())
-        except Exception:
-            return "127.0.0.1"
+        pass
+
+    return None
 
 
 def zeroconf_available() -> tuple[bool, str | None]:
@@ -275,18 +313,76 @@ class MonitorServerController:
         self._server_cfg = normalize_monitor_server_config({})
         self._zeroconf: Zeroconf | None = None
         self._mdns_service: ServiceInfo | None = None
+        self._mdns_lock = threading.Lock()
+        self._mdns_stop_event = threading.Event()
+        self._mdns_thread: threading.Thread | None = None
+        self._registered_ip: str | None = None
 
     def _start_mdns(self, server_cfg: dict) -> None:
-        """Register the monitor service via mDNS/DNS-SD."""
+        """Start the mDNS watcher; it registers as soon as a usable IP exists.
+
+        Polls the network periodically so registration recovers from boot-time
+        situations like "no cable yet" and from later changes (DHCP renewal,
+        adapter coming up/down, IP change).
+        """
         if not server_cfg.get("mdns", True):
             return
         if Zeroconf is None:
             log.warning("mDNS skipped: zeroconf library not available")
             return
+
+        # Guard: stop any previous watcher before spawning a new one.
+        self._stop_mdns()
+        self._mdns_stop_event.clear()
+        # First attempt synchronously so the startup log line appears
+        # immediately when the network is already up.
         try:
-            local_ip = _get_local_ip()
+            self._mdns_check_and_register(server_cfg)
+        except Exception as exc:
+            log.debug(f"Initial mDNS check error: {exc}")
+
+        thread = threading.Thread(
+            target=self._mdns_watcher_loop,
+            args=(server_cfg,),
+            daemon=True,
+            name="monitor-mdns-watcher",
+        )
+        self._mdns_thread = thread
+        thread.start()
+
+    def _mdns_watcher_loop(self, server_cfg: dict) -> None:
+        # wait() returns True when the event is set (-> stop). Using it as the
+        # condition means we sleep first, then re-check.
+        while not self._mdns_stop_event.wait(timeout=MDNS_WATCH_INTERVAL_SEC):
+            try:
+                self._mdns_check_and_register(server_cfg)
+            except Exception as exc:
+                log.debug(f"mDNS watcher iteration error: {exc}")
+
+    def _mdns_check_and_register(self, server_cfg: dict) -> None:
+        new_ip = _get_local_ip()
+        port = server_cfg["port"]
+        with self._mdns_lock:
+            if new_ip is None:
+                # Network unavailable. Drop any stale registration so clients
+                # don't keep trying an address that no longer works.
+                if self._zeroconf is not None:
+                    log.info("mDNS: no usable IP, unregistering until network returns")
+                    self._do_unregister_mdns_locked()
+                return
+            if self._zeroconf is None:
+                self._do_register_mdns_locked(server_cfg, new_ip, port)
+            elif new_ip != self._registered_ip:
+                log.info(
+                    "mDNS IP changed: %s -> %s, re-registering",
+                    self._registered_ip, new_ip,
+                )
+                self._do_unregister_mdns_locked()
+                self._do_register_mdns_locked(server_cfg, new_ip, port)
+
+    def _do_register_mdns_locked(self, server_cfg: dict, local_ip: str, port: int) -> None:
+        try:
             ip_bytes = socket.inet_aton(local_ip)
-            port = server_cfg["port"]
             properties = {
                 "auth_required": str(bool(server_cfg["token"])).lower(),
                 "path": "/ws/monitor",
@@ -300,26 +396,38 @@ class MonitorServerController:
             )
             self._zeroconf = Zeroconf()
             self._zeroconf.register_service(self._mdns_service)
+            self._registered_ip = local_ip
             log.info(
                 "mDNS service registered: Little-Helper-Monitor.%s at %s:%s",
                 MDNS_SERVICE_TYPE, local_ip, port,
             )
         except Exception as exc:
             log.warning(f"mDNS registration failed: {exc}")
-            self._stop_mdns()
+            self._do_unregister_mdns_locked()
 
-    def _stop_mdns(self) -> None:
-        """Unregister the mDNS service."""
+    def _do_unregister_mdns_locked(self) -> None:
         if self._zeroconf is not None:
             try:
                 if self._mdns_service is not None:
                     self._zeroconf.unregister_service(self._mdns_service)
-                    self._mdns_service = None
                 self._zeroconf.close()
             except Exception as exc:
                 log.debug(f"mDNS cleanup error: {exc}")
             finally:
                 self._zeroconf = None
+                self._mdns_service = None
+                self._registered_ip = None
+
+    def _stop_mdns(self) -> None:
+        """Stop the watcher and unregister the mDNS service."""
+        self._mdns_stop_event.set()
+        thread = self._mdns_thread
+        self._mdns_thread = None
+        # Don't join from inside the watcher thread itself.
+        if thread is not None and thread is not threading.current_thread() and thread.is_alive():
+            thread.join(timeout=2)
+        with self._mdns_lock:
+            self._do_unregister_mdns_locked()
 
     def start(self, config: dict) -> bool:
         server_cfg = normalize_monitor_server_config(config)

@@ -268,7 +268,7 @@ def _control_loop(config: dict, lhm_computer, lhm_lock: threading.Lock) -> None:
                 last_discover_at = now
                 with lhm_lock:
                     new_controls = _discover_fan_controls(lhm_computer, fan_indices, verbose=False)
-                if len(new_controls) != len(fan_controls):
+                if len(new_controls) > len(fan_controls):
                     log.info(
                         f"Fan re-discovery: {len(fan_controls)} → {len(new_controls)} control(s)"
                     )
