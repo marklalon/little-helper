@@ -339,12 +339,6 @@ class MonitorServerController:
         # Guard: stop any previous watcher before spawning a new one.
         self._stop_mdns()
         self._mdns_stop_event.clear()
-        # First attempt synchronously so the startup log line appears
-        # immediately when the network is already up.
-        try:
-            self._mdns_check_and_register(server_cfg)
-        except Exception as exc:
-            log.debug(f"Initial mDNS check error: {exc}")
 
         thread = threading.Thread(
             target=self._mdns_watcher_loop,
@@ -356,8 +350,14 @@ class MonitorServerController:
         thread.start()
 
     def _mdns_watcher_loop(self, server_cfg: dict) -> None:
-        # wait() returns True when the event is set (-> stop). Using it as the
-        # condition means we sleep first, then re-check.
+        # Do the first check immediately so registration happens without delay.
+        try:
+            self._mdns_check_and_register(server_cfg)
+        except Exception as exc:
+            log.debug(f"mDNS watcher initial check error: {exc}")
+
+        # Then enter the periodic polling loop. wait() returns True when the
+        # event is set (-> stop), so we sleep first, then re-check.
         while not self._mdns_stop_event.wait(timeout=MDNS_WATCH_INTERVAL_SEC):
             try:
                 self._mdns_check_and_register(server_cfg)
@@ -430,7 +430,7 @@ class MonitorServerController:
         self._mdns_thread = None
         # Don't join from inside the watcher thread itself.
         if thread is not None and thread is not threading.current_thread() and thread.is_alive():
-            thread.join(timeout=2)
+            thread.join(timeout=1)
         with self._mdns_lock:
             self._do_unregister_mdns_locked()
 
@@ -464,7 +464,7 @@ class MonitorServerController:
             self._thread = thread
 
         thread.start()
-        if not self._ready_event.wait(timeout=5):
+        if not self._ready_event.wait(timeout=3):
             if self._startup_error is not None:
                 raise RuntimeError(self._startup_error)
             if not thread.is_alive():
@@ -478,8 +478,7 @@ class MonitorServerController:
             raise RuntimeError(
                 f"Monitor server failed to start on {server_cfg['host']}:{server_cfg['port']}"
             )
-        # Start mDNS after server is confirmed running
-        self._start_mdns(server_cfg)
+        # mDNS is now started inside _run_server (non-blocking)
         return True
 
     def stop(self) -> None:
@@ -494,10 +493,10 @@ class MonitorServerController:
         if server is not None:
             server.should_exit = True
         if thread is not None and thread.is_alive():
-            thread.join(timeout=3)
+            thread.join(timeout=2)
             if thread.is_alive() and server is not None:
                 server.force_exit = True
-                thread.join(timeout=1)
+                thread.join(timeout=0.5)
 
     def restart(self, config: dict) -> bool:
         self.stop()
@@ -526,6 +525,8 @@ class MonitorServerController:
             server = uvicorn.Server(config)
             with self._lock:
                 self._server = server
+            # Start mDNS in a daemon thread so it doesn't block server startup.
+            self._start_mdns(server_cfg)
             server.run()
             if not server.started and self._startup_error is None:
                 self._startup_error = (

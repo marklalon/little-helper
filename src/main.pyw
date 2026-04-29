@@ -1037,27 +1037,30 @@ def show_settings_dialog() -> None:
             _config["monitor_server"] = new_cfg
             cfg.save_config(_config)
 
-            try:
-                if new_cfg.get("enabled"):
-                    if monitor_server.monitor_server_is_running() and old_cfg != new_cfg:
-                        monitor_server.restart_monitor_server(_config)
-                    elif not monitor_server.monitor_server_is_running():
-                        monitor_server.start_monitor_server(_config)
-                else:
-                    monitor_server.stop_monitor_server()
-                if notify_user:
-                    urls = monitor_server.get_monitor_urls(new_cfg)
+            def _do_apply():
+                try:
                     if new_cfg.get("enabled"):
-                        _notify(
-                            f"Monitor server active\nHTTP: {urls['http']}\nWS: {urls['websocket']}",
-                            "Monitor Server",
-                        )
+                        if monitor_server.monitor_server_is_running() and old_cfg != new_cfg:
+                            monitor_server.restart_monitor_server(_config)
+                        elif not monitor_server.monitor_server_is_running():
+                            monitor_server.start_monitor_server(_config)
                     else:
-                        _notify("Monitor server stopped", "Monitor Server")
-            except Exception as e:
-                log.error(f"Error applying monitor server settings: {e}", exc_info=True)
-                if notify_user:
-                    _notify(f"Monitor server error: {e}", "Monitor Server")
+                        monitor_server.stop_monitor_server()
+                    if notify_user:
+                        urls = monitor_server.get_monitor_urls(new_cfg)
+                        if new_cfg.get("enabled"):
+                            _notify(
+                                f"Monitor server active\nHTTP: {urls['http']}\nWS: {urls['websocket']}",
+                                "Monitor Server",
+                            )
+                        else:
+                            _notify("Monitor server stopped", "Monitor Server")
+                except Exception as e:
+                    log.error(f"Error applying monitor server settings: {e}", exc_info=True)
+                    if notify_user:
+                        _notify(f"Monitor server error: {e}", "Monitor Server")
+
+            threading.Thread(target=_do_apply, daemon=True, name="apply-monitor-server").start()
 
         for _var in (ms_enabled, ms_host, ms_port, ms_token, ms_mdns):
             _var.trace_add("write", _update_monitor_server_hint)
@@ -1073,21 +1076,10 @@ def show_settings_dialog() -> None:
         )
         ms_apply_btn.pack(side="left", padx=2)
 
-        ms_enabled.trace_add(
-            "write",
-            lambda *_: None if _initing[0] else _apply_monitor_server_settings(notify_user=True),
-        )
-
-        # ── Close: save key fields and slider defaults ────────────────────────
+        # ── Close: save hotkey/fan defaults, discard monitor server changes ────
         def _close():
             global _settings_root, _settings_overlay_enabled_var
             dirty = False
-
-            new_monitor_cfg = _collect_monitor_server_config()
-            old_monitor_cfg = dict(_config.get("monitor_server", {}))
-            if old_monitor_cfg != new_monitor_cfg:
-                _config["monitor_server"] = new_monitor_cfg
-                dirty = True
 
             for path, new_val in [
                 (("paste_hotkey",      "key"),        paste_key.get().upper()),
@@ -1101,14 +1093,6 @@ def show_settings_dialog() -> None:
                     dirty = True
             if dirty:
                 cfg.save_config(_config)
-            if old_monitor_cfg != new_monitor_cfg:
-                try:
-                    if new_monitor_cfg.get("enabled"):
-                        monitor_server.restart_monitor_server(_config)
-                    else:
-                        monitor_server.stop_monitor_server()
-                except Exception as e:
-                    log.error(f"Error restarting monitor server on settings close: {e}", exc_info=True)
             if _poll_id[0]:
                 root.after_cancel(_poll_id[0])
             if _gfc_poll_id[0]:
