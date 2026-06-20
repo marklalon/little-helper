@@ -646,10 +646,28 @@ def _monitor_loop(config: dict) -> None:
                     gpu_threshold = config["auto_sleep"]["gpu_threshold"]
                     disk_threshold = config["auto_sleep"]["disk_threshold_mbps"]
                     
-                    # All samples must be below thresholds
-                    idle_condition_met = all(
-                        (cpu <= cpu_threshold and gpu <= gpu_threshold and disk <= disk_threshold)
-                        for (_, cpu, gpu, disk) in _samples
+                    # 1. Average of all samples within idle_seconds must be below threshold
+                    n = len(_samples)
+                    avg_cpu = sum(s[1] for s in _samples) / n
+                    avg_gpu = sum(s[2] for s in _samples) / n
+                    avg_disk = sum(s[3] for s in _samples) / n
+                    
+                    # 2. Peak value within the last 1 minute must be below threshold
+                    one_min_ago = now - 60.0
+                    recent = [s for s in _samples if s[0] >= one_min_ago]
+                    if recent:
+                        peak_cpu = max(s[1] for s in recent)
+                        peak_gpu = max(s[2] for s in recent)
+                        peak_disk = max(s[3] for s in recent)
+                    else:
+                        # No recent samples (idle_seconds < 60s), fall back to all samples
+                        peak_cpu = max(s[1] for s in _samples)
+                        peak_gpu = max(s[2] for s in _samples)
+                        peak_disk = max(s[3] for s in _samples)
+                    
+                    idle_condition_met = (
+                        avg_cpu <= cpu_threshold and avg_gpu <= gpu_threshold and avg_disk <= disk_threshold
+                        and peak_cpu <= cpu_threshold and peak_gpu <= gpu_threshold and peak_disk <= disk_threshold
                     )
                     
                     # Check if both keyboard and mouse have been inactive for the entire idle period
@@ -658,8 +676,8 @@ def _monitor_loop(config: dict) -> None:
                     
                     if idle_condition_met and idle_since_keyboard and idle_since_mouse:
                         log.info(
-                            f"Idle detected: CPU={cpu_pct:.1f}% "
-                            f"GPU={gpu_pct:.1f}% Disk={disk_mbps:.1f}MB/s; "
+                            f"Idle detected: avg CPU={avg_cpu:.1f}% GPU={avg_gpu:.1f}% Disk={avg_disk:.1f}MB/s; "
+                            f"peak(1min) CPU={peak_cpu:.1f}% GPU={peak_gpu:.1f}% Disk={peak_disk:.1f}MB/s; "
                             f"keyboard and mouse both inactive for {idle_seconds}s"
                         )
                         _samples.clear()
